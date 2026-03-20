@@ -1,7 +1,6 @@
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 
-import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 from sqlalchemy import create_engine, text
@@ -9,10 +8,17 @@ from sqlalchemy import create_engine, text
 DATABASE_URL = "postgresql://admin:secret@localhost:5432/log_db"
 engine = create_engine(DATABASE_URL)
 
+FEATURE_COLUMNS = [
+    "error_count",
+    "warn_count",
+    "request_count",
+    "avg_response_time",
+    "unique_ip_count",
+]
+
 
 def get_training_data():
-    # Fetch last 100 feature sets to train/calibrate the model
-    query = "SELECT error_count, warn_count, request_count, avg_response_time, unique_ip_count FROM features ORDER BY window_start DESC LIMIT 100"
+    query = f"SELECT {', '.join(FEATURE_COLUMNS)} FROM features ORDER BY window_start DESC LIMIT 100"
     return pd.read_sql(query, engine)
 
 
@@ -39,42 +45,29 @@ def process_metrics():
         df["window_end"] = df["window_start"] + pd.Timedelta(minutes=1)
         df.to_sql("features", engine, if_exists="append", index=False)
 
-        # ML Training and Prediction
         training_df = get_training_data()
 
-        # We need a minimum amount of data to train a meaningful model
         if len(training_df) > 10:
+            # Training with feature names intact
             model = IsolationForest(contamination=0.05, random_state=42)
-            model.fit(training_df)
+            model.fit(training_df[FEATURE_COLUMNS])
 
             for _, row in df.iterrows():
-                # Prepare current record for prediction
-                current_features = np.array(
-                    [
-                        [
-                            row["error_count"],
-                            row["warn_count"],
-                            row["request_count"],
-                            row["avg_response_time"],
-                            row["unique_ip_count"],
-                        ]
-                    ]
+                # Prediction using DataFrame with feature names to suppress warnings
+                current_sample = pd.DataFrame(
+                    [row[FEATURE_COLUMNS]], columns=FEATURE_COLUMNS
                 )
 
-                # -1 is anomaly, 1 is normal
-                prediction = model.predict(current_features)[0]
-                score = model.decision_function(current_features)[0]
+                prediction = model.predict(current_sample)[0]
+                score = model.decision_function(current_sample)[0]
 
                 if prediction == -1:
-                    insert_anomaly(row["service_name"], score, is_ml=True)
-        else:
-            print("Insufficient data for ML training. Waiting for more features...")
-
+                    insert_anomaly(row["service_name"], score)
     except Exception as e:
-        print(f"Error in ML pipeline: {e}")
+        print(f"Pipeline error: {e}")
 
 
-def insert_anomaly(service_name, score, is_ml=False):
+def insert_anomaly(service_name, score):
     query = text("""
         INSERT INTO anomalies (service_name, anomaly_score, is_anomaly, detected_at)
         VALUES (:service, :score, TRUE, :ts)
@@ -82,13 +75,17 @@ def insert_anomaly(service_name, score, is_ml=False):
     with engine.begin() as conn:
         conn.execute(
             query,
-            {"service": service_name, "score": float(score), "ts": datetime.utcnow()},
+            {
+                "service": service_name,
+                "score": float(score),
+                "ts": datetime.now(UTC),
+            },
         )
-    print(f"ML Anomaly detected: {service_name} | Score: {score:.4f}")
+    print(f"ML Anomaly: {service_name} | Score: {score:.4f}")
 
 
 if __name__ == "__main__":
-    print("ML-Enhanced Feature Extraction Service Started")
+    print("Clean ML Service Started")
     while True:
         process_metrics()
         time.sleep(10)
