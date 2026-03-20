@@ -1,3 +1,4 @@
+import os
 import time
 from datetime import UTC, datetime
 
@@ -5,7 +6,7 @@ import pandas as pd
 from sklearn.ensemble import IsolationForest
 from sqlalchemy import create_engine, text
 
-DATABASE_URL = "postgresql://admin:secret@localhost:5432/log_db"
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://admin:secret@db:5432/log_db")
 engine = create_engine(DATABASE_URL)
 
 FEATURE_COLUMNS = [

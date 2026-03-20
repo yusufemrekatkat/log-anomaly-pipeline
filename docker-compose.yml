@@ -6,12 +6,45 @@ services:
       - POSTGRES_USER=admin
       - POSTGRES_PASSWORD=secret
       - POSTGRES_DB=log_db
-    ports:
-      - "5432:5432"
-    volumes:
-      - ./init-db:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U admin -d log_db"]
       interval: 5s
       timeout: 5s
       retries: 5
+
+  ingestion:
+    build: .
+    command: uv run uvicorn ingestion.main:app --host 0.0.0.0 --port 8000
+    environment:
+      - DATABASE_URL=postgresql://admin:secret@db:5432/log_db
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  producer:
+    build: .
+    command: uv run producer/main.py
+    environment:
+      - INGEST_URL=http://ingestion:8000/ingest
+    depends_on:
+      - ingestion
+
+  extractor:
+    build: .
+    command: uv run features/extractor.py
+    environment:
+      - DATABASE_URL=postgresql://admin:secret@db:5432/log_db
+    depends_on:
+      db:
+        condition: service_healthy
+
+  alert-service:
+    build: .
+    command: uv run alert/main.py
+    environment:
+      - DATABASE_URL=postgresql://admin:secret@db:5432/log_db
+    depends_on:
+      db:
+        condition: service_healthy

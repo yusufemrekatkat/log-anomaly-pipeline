@@ -1,8 +1,9 @@
+import os
 import time
 
 from sqlalchemy import create_engine, text
 
-DATABASE_URL = "postgresql://admin:secret@localhost:5432/log_db"
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://admin:secret@db:5432/log_db")
 engine = create_engine(DATABASE_URL)
 
 
