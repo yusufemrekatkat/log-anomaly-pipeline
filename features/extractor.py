@@ -1,14 +1,17 @@
 import time
+from datetime import datetime
 
 import pandas as pd
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 
 DATABASE_URL = "postgresql://admin:secret@localhost:5432/log_db"
 engine = create_engine(DATABASE_URL)
 
+# Threshold for statistical baseline
+LATENCY_THRESHOLD_MS = 400.0
 
-def extract_features():
-    # Son 1 dakikalık veriyi çek ve aggregate et
+
+def process_metrics():
     query = """
     SELECT
         date_trunc('minute', timestamp) as window_start,
@@ -22,25 +25,41 @@ def extract_features():
     WHERE timestamp >= NOW() - INTERVAL '1 minute'
     GROUP BY window_start, service_name
     """
-    df = pd.read_sql(query, engine)
-    return df
+
+    try:
+        df = pd.read_sql(query, engine)
+        if df.empty:
+            return
+
+        df["window_end"] = df["window_start"] + pd.Timedelta(minutes=1)
+
+        # Persist features
+        df.to_sql("features", engine, if_exists="append", index=False)
+
+        # Detect anomalies based on static baseline
+        for _, row in df.iterrows():
+            if row["avg_response_time"] > LATENCY_THRESHOLD_MS:
+                insert_anomaly(row["service_name"], row["avg_response_time"])
+
+    except Exception as e:
+        print(f"Error processing metrics: {e}")
+
+
+def insert_anomaly(service_name, score):
+    query = text("""
+        INSERT INTO anomalies (service_name, anomaly_score, is_anomaly, detected_at)
+        VALUES (:service, :score, TRUE, :ts)
+    """)
+    with engine.begin() as conn:
+        conn.execute(
+            query,
+            {"service": service_name, "score": float(score), "ts": datetime.utcnow()},
+        )
+    print(f"Anomaly detected: {service_name} | Latency: {score:.2f}ms")
 
 
 if __name__ == "__main__":
-    print("Feature Extractor başlatıldı. Veri bekleniyor...")
+    print("Feature Extraction Service Started")
     while True:
-        try:
-            features_df = extract_features()
-            if not features_df.empty:
-                print(
-                    f"\n--- Feature Window: {features_df['window_start'].iloc[0]} ---"
-                )
-                print(
-                    features_df[["service_name", "request_count", "avg_response_time"]]
-                )
-            else:
-                print(".", end="", flush=True)
-            time.sleep(10)
-        except Exception as e:
-            print(f"Hata: {e}")
-            time.sleep(5)
+        process_metrics()
+        time.sleep(10)
