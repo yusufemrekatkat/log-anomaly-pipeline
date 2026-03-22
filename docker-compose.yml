@@ -14,14 +14,15 @@ services:
 
   ingestion:
     build: .
-    command: uv run uvicorn ingestion.main:app --host 0.0.0.0 --port 8000
+    command: uv run ingestion/consumer.py
     environment:
       - DATABASE_URL=postgresql://admin:secret@db:5432/log_db
-    ports:
-      - "8000:8000"
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
     depends_on:
       db:
         condition: service_healthy
+      kafka:
+        condition: service_started
 
   producer:
     build: .
