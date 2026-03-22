@@ -1,15 +1,15 @@
 import os
 import json
-import time
 from datetime import datetime
-from confluent_kafka import Consumer, KafkaError
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, text
+from confluent_kafka import Consumer, Producer, KafkaError
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 # Configuration
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://admin:secret@localhost:5432/log_db")
-KAFKA_TOPIC = "raw-logs"
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://admin:secret@db:5432/log_db")
+INPUT_TOPIC = "raw-logs"
+DLQ_TOPIC = "raw-logs-dlq"
 GROUP_ID = "ingestion-group"
 
 # DB Setup
@@ -26,36 +26,32 @@ class LogEntry(Base):
     message = Column(String)
     response_time_ms = Column(Float)
     ip = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
 
 def consume_logs():
-    conf = {
+    # Consumer for input, Producer for DLQ
+    consumer = Consumer({
         'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS,
         'group.id': GROUP_ID,
         'auto.offset.reset': 'earliest',
-        'enable.auto.commit': True
-    }
+        'enable.auto.commit': False  # Manual commit for better reliability
+    })
 
-    consumer = Consumer(conf)
-    consumer.subscribe([KAFKA_TOPIC])
+    dlq_producer = Producer({'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS})
+    consumer.subscribe([INPUT_TOPIC])
 
-    print(f"Consumer started. Listening to {KAFKA_TOPIC}...")
+    print(f"Ingestion Consumer with DLQ started. Listening to {INPUT_TOPIC}...")
 
     try:
         while True:
             msg = consumer.poll(1.0)
-            if msg is None:
-                continue
+            if msg is None: continue
             if msg.error():
-                if msg.error().code() == KafkaError._PARTITION_EOF:
-                    continue
-                else:
-                    print(f"Consumer error: {msg.error()}")
-                    break
+                print(f"Kafka Error: {msg.error()}")
+                continue
 
-            # Process message
+            raw_value = msg.value()
             try:
-                data = json.loads(msg.value().decode('utf-8'))
+                data = json.loads(raw_value.decode('utf-8'))
 
                 with SessionLocal() as session:
                     log_entry = LogEntry(
@@ -69,8 +65,18 @@ def consume_logs():
                     session.add(log_entry)
                     session.commit()
 
+                consumer.commit(msg) # Only commit if DB write succeeds
+
             except Exception as e:
-                print(f"Error persisting log: {e}")
+                print(f"Error processing message. Sending to DLQ: {e}")
+                # Produce the raw failed message to the DLQ topic
+                dlq_producer.produce(
+                    DLQ_TOPIC,
+                    value=raw_value,
+                    headers=[("error", str(e).encode('utf-8'))]
+                )
+                dlq_producer.flush()
+                consumer.commit(msg) # Commit failed message to move the offset forward
 
     except KeyboardInterrupt:
         pass
