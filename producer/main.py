@@ -1,14 +1,22 @@
-import os
-import random
 import time
-from datetime import datetime
-
-import httpx
+import json
+import random
+import os
+from datetime import datetime, timezone
+from confluent_kafka import Producer
 from loguru import logger
 
-# Docker'da 'http://ingestion:8000/ingest', lokalde 'http://localhost:8000/ingest'
-INGEST_URL = os.getenv("INGEST_URL", "http://localhost:8000/ingest")
+# Configuration from Environment
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+KAFKA_TOPIC = "raw-logs"
 
+def delivery_report(err, msg):
+    """ Callback called once for each message produced to indicate delivery result. """
+    if err is not None:
+        logger.error(f"Message delivery failed: {err}")
+    else:
+        # Silent success for performance, enable for debugging
+        pass
 
 def generate_log():
     services = ["auth-service", "payment-service", "order-service", "inventory-service"]
@@ -21,25 +29,36 @@ def generate_log():
         level = "ERROR"
 
     return {
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "service_name": service,
         "log_level": level,
         "message": f"Processed in {resp_time:.2f}ms",
         "response_time_ms": round(resp_time, 2),
-        "ip": f"192.168.1.{random.randint(1, 100)}",
+        "ip": f"192.168.1.{random.randint(1, 100)}"
     }
 
-
 if __name__ == "__main__":
-    logger.info(f"Producer started. Sending to: {INGEST_URL}")
-    with httpx.Client() as client:
-        while True:
-            try:
-                log_entry = generate_log()
-                response = client.post(INGEST_URL, json=log_entry, timeout=5.0)
-                if response.status_code == 200:
-                    logger.success(f"Sent: {log_entry['service_name']}")
-            except Exception as e:
-                logger.error(f"Target {INGEST_URL} unreachable: {e}")
+    conf = {'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS}
+    producer = Producer(conf)
 
-            time.sleep(1)
+    logger.info(f"Kafka Producer started. Streaming to: {KAFKA_TOPIC}")
+
+    while True:
+        try:
+            log_entry = generate_log()
+            # Asynchronous produce
+            producer.produce(
+                KAFKA_TOPIC,
+                value=json.dumps(log_entry).encode('utf-8'),
+                callback=delivery_report
+            )
+            # Serve delivery callbacks from previous asynchronous calls
+            producer.poll(0)
+
+            if random.random() < 0.1: # Periodic status update
+                logger.info(f"Streaming active: last sent {log_entry['service_name']}")
+
+        except Exception as e:
+            logger.error(f"Streaming error: {e}")
+
+        time.sleep(0.5) # 2 logs per second

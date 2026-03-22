@@ -27,9 +27,9 @@ services:
     build: .
     command: uv run producer/main.py
     environment:
-      - INGEST_URL=http://ingestion:8000/ingest
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
     depends_on:
-      - ingestion
+      - kafka
 
   extractor:
     build: .

@@ -1,18 +1,9 @@
 import os
-from datetime import UTC, datetime
-
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, text
+from sqlalchemy.orm import sessionmaker, Session, declarative_base
+from datetime import datetime, timezone
 from pydantic import BaseModel
-from sqlalchemy import (
-    Boolean,
-    Column,
-    DateTime,
-    Float,
-    Integer,
-    String,
-    create_engine,
-)
-from sqlalchemy.orm import declarative_base, sessionmaker
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://admin:secret@db:5432/log_db")
 
@@ -20,8 +11,7 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
-# --- MODELLER ---
-
+# --- MODELS ---
 
 class LogEntry(Base):
     __tablename__ = "logs"
@@ -32,8 +22,7 @@ class LogEntry(Base):
     message = Column(String)
     response_time_ms = Column(Float)
     ip = Column(String)
-    created_at = Column(DateTime, default=lambda: datetime.now(UTC))
-
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class FeatureEntry(Base):
     __tablename__ = "features"
@@ -46,26 +35,23 @@ class FeatureEntry(Base):
     request_count = Column(Integer)
     avg_response_time = Column(Float)
     unique_ip_count = Column(Integer)
-    created_at = Column(DateTime, default=lambda: datetime.now(UTC))
-
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class AnomalyEntry(Base):
     __tablename__ = "anomalies"
     id = Column(Integer, primary_key=True)
-    detected_at = Column(DateTime, default=lambda: datetime.now(UTC))
+    detected_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     service_name = Column(String)
     anomaly_score = Column(Float)
     is_anomaly = Column(Boolean, default=True)
     alert_sent = Column(Boolean, default=False)
 
-
-# Tabloları oluştur
+# Create Tables
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
 # --- API ---
-
 
 class LogCreate(BaseModel):
     timestamp: datetime
@@ -75,7 +61,6 @@ class LogCreate(BaseModel):
     response_time_ms: float
     ip: str
 
-
 @app.post("/ingest")
 def ingest_log(log: LogCreate):
     with SessionLocal() as db:
@@ -83,7 +68,6 @@ def ingest_log(log: LogCreate):
         db.add(db_log)
         db.commit()
     return {"status": "ok"}
-
 
 @app.get("/health")
 def health():
