@@ -34,7 +34,7 @@ def process_metrics():
         AVG(response_time_ms) as avg_response_time,
         COUNT(DISTINCT ip) as unique_ip_count
     FROM logs
-    WHERE timestamp >= NOW() - INTERVAL '1 minute'
+    WHERE timestamp >= CURRENT_TIMESTAMP - INTERVAL '1 minute'
     GROUP BY window_start, service_name
     """
 
