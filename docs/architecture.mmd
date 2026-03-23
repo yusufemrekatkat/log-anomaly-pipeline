@@ -1,0 +1,50 @@
+%%{init: {
+  'theme': 'base',
+  'themeVariables': {
+    'background': 'transparent',
+    'primaryColor': '#1e293b',
+    'primaryTextColor': '#f8fafc',
+    'clusterBkg': '#111827',
+    'clusterBorder': '#334155',
+    'lineColor': '#94a3b8',
+    'fontSize': '14px',
+    'fontFamily': 'inter, system-ui, sans-serif'
+  }
+}}%%
+graph TB
+    subgraph Ingest [INGEST]
+        direction LR
+        A[<b>Producer</b><br/>Synthetic logs] --- B[<b>Kafka</b><br/>Buffer] --- C[<b>Ingestion</b><br/>Idempotent]
+    end
+
+    subgraph Store [STORE]
+        D[(<b>PostgreSQL</b><br/>logs • features • anomalies)]
+    end
+
+    subgraph Process [PROCESS]
+        direction LR
+        E[<b>Extractor</b><br/>Feature window] --- F[<b>ML Model</b><br/>IsolationForest] --- G[<b>Monitor</b><br/>Auto-retrain]
+    end
+
+    subgraph Alert [ALERT]
+        H[<b>Alert Service</b><br/>De-duplicated]
+    end
+
+    %% Akışlar
+    C --> D
+    D --> E
+    E --> F
+    F --> D
+    D --> H
+
+    %% Enterprise Stil Tanımları
+    classDef default fill:#1f2937,stroke:#4b5563,color:#f3f4f6,rx:6,ry:6;
+    classDef component fill:#064e3b,stroke:#10b981,color:#ecfdf5;
+    classDef infra fill:#431407,stroke:#f59e0b,color:#fff7ed;
+    classDef storage fill:#2e1065,stroke:#8b5cf6,color:#f5f3ff;
+    classDef ml_alert fill:#450a0a,stroke:#ef4444,color:#fef2f2;
+
+    class A,C,E component;
+    class B,G infra;
+    class D storage;
+    class F,H ml_alert;
