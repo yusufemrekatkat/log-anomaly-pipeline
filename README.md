@@ -1,4 +1,3 @@
-````markdown
 # Log Anomaly Pipeline
 
 A Kafka-native, Docker-orchestrated anomaly detection system for live service logs.
@@ -374,5 +373,4 @@ docker compose logs -f extractor
 docker compose logs -f alert-service
 ```
 
-```
 ```
