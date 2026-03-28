@@ -18,6 +18,8 @@ flowchart LR
     D --> F[Alert Service]
 ````
 
+<img width="789" height="687" alt="image" src="https://github.com/user-attachments/assets/b03c3609-5959-45ea-b3b5-37235522e64b" />
+
 ***
 
 ## System Overview
