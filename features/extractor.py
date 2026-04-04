@@ -4,43 +4,59 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timezone
 from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
 from sqlalchemy import create_engine, text
+from prometheus_client import start_http_server, Counter, Histogram
 
+
+# --- configuration ---
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://admin:secret@db:5432/log_db")
 engine = create_engine(DATABASE_URL)
 
 FEATURE_COLUMNS = ["error_count", "warn_count", "request_count", "avg_response_time", "unique_ip_count"]
-DRIFT_THRESHOLD = -0.05
-DRIFT_WINDOW = 5
 
-# State
+# --- metrics ---
+FEATURES_EXTRACTED = Counter('features_extracted_total', 'Total feature windows processed')
+ANOMALIES_DETECTED = Counter('anomalies_detected_total', 'Total anomalies found', ['service'])
+MODEL_RETRAIN_TIME = Histogram('model_retrain_seconds', 'Time spent retraining the model')
+
+
+# --- State Management ---
 model = None
-scores = []
+scaler = StandardScaler()
+scores_buffer = []
+DRIFT_WINDOW = 5
+DRIFT_THRESHOLD = -0.05
 
-def train_or_update():
+def train_model():
+    """Fetches historical features and fits the isolation forest."""
     global model
-    query = f"SELECT {', '.join(FEATURE_COLUMNS)} FROM features ORDER BY window_start DESC LIMIT 500"
-    df = pd.read_sql(query, engine)
-    if len(df) > 25:
-        m = IsolationForest(contamination=0.05, random_state=42)
-        m.fit(df[FEATURE_COLUMNS])
-        model = m
-        print(f"Model update complete. Training set size: {len(df)}")
-        return True
-    return False
+    start_t = time.time()
+    query = f"SELECT {', '.join(FEATURE_COLUMNS)} FROM features ORDER BY window_start DESC LIMIT 1000"
 
-def check_drift(batch_scores):
-    global scores
-    if not batch_scores: return False
-    scores.append(np.mean(batch_scores))
-    if len(scores) > DRIFT_WINDOW: scores.pop(0)
-    if len(scores) == DRIFT_WINDOW and np.mean(scores) < DRIFT_THRESHOLD:
-        print(f"Drift alert: Avg score {np.mean(scores):.4f}. Retraining...")
+    try:
+        df = pd.read_sql(query, engine)
+        if len(df) < 50:
+            return False
+
+        # scaling is mandatory for variance-based detection
+        scaled_data = scaler.fit_transform(df[FEATURE_COLUMNS])
+
+        m = IsolationForest(contamination=0.05, random_state=42)
+        m.fit(scaled_data)
+
+        model = m
+        MODEL_RETRAIN_TIME.observe(time.time() - start_t)
+        print(f"Model retrained with {len(df)} samples.")
         return True
-    return False
+    except Exception as e:
+        print(f"Training Error: {e}")
+        return False
+
 
 def run_pipeline():
     global model
+    # 1. aggregate raw logs into 1-minute feature windows
     query = """
     SELECT date_trunc('minute', timestamp) as window_start, service_name,
            COUNT(*) FILTER (WHERE log_level = 'ERROR') as error_count,
@@ -54,30 +70,58 @@ def run_pipeline():
         df = pd.read_sql(query, engine)
         if df.empty: return
 
+        # persistence: save the calculated features
         df['window_end'] = df['window_start'] + pd.Timedelta(minutes=1)
         df.to_sql('features', engine, if_exists='append', index=False)
+        FEATURES_EXTRACTED.inc(len(df))
 
-        if model is None and not train_or_update(): return
+        if model is None and not train_model(): return
 
-        batch_scores = []
+        current_batch_scores = []
         for _, row in df.iterrows():
-            sample = pd.DataFrame([row[FEATURE_COLUMNS]], columns=FEATURE_COLUMNS)
-            pred = model.predict(sample)[0]
-            score = model.decision_function(sample)[0]
-            batch_scores.append(score)
+            # 2. transform and predict
+            feature_vector = row[FEATURE_COLUMNS].values.reshape(1, -1)
+            scaled_vector = scaler.transform(feature_vector)
 
-            if pred == -1:
+            prediction = model.predict(scaled_vector)[0]  # 1:normal   -1:anomaly
+            score = model.decision_function(scaled_vector)[0]
+            current_batch_scores.append(score)
+
+            if prediction == -1:
+                # root cause analysis (z-score attribution): compare current sample against scaler means and scales
+                z_score = (feature_vector[0] - scaler.mean_) / scaler.scale_
+                dominant_idx = np.argmax(np.abs(z_scores))
+                dominant_feature = FEATURE_COLUMNS[dominant_idx]
+
                 with engine.begin() as conn:
-                    conn.execute(text("INSERT INTO anomalies (detected_at, service_name, anomaly_score) VALUES (:ts, :svc, :sc)"),
-                                 {"ts": datetime.now(timezone.utc), "svc": row['service_name'], "sc": float(score)})
-                print(f"Anomaly: {row['service_name']} | Score: {score:.4f}")
+                    conn.execute(text("""
+                                      INSERT INTO anomalies (detected_at, service_name, anomaly_score, dominant_feature)
+                                      VALUES (:ts, :svc, :sc, :df)
+                                      """),{
+                                          "ts": datetime.now(timezone.utc),
+                                          "svc": row['service_name'],
+                                          "sc": float(score),
+                                          "df": dominant_feature
+                                        })
+                ANOMALIES_DETECTED.labels(service=row['service_name']).inc()
+                print(f"Anomaly: {row['service_name']} | Root Cause: {dominant_feature}")
 
-        if check_drift(batch_scores): train_or_update()
+        # 4. simple concept drift detection
+        avg_score = np.mean(current_batch_scores)
+        scores_buffer.append(avg_score)
+        if len(scores_buffer) > DRIFT_WINDOW:
+            scores_buffer.pop(0)
+            if np.mean(scores_buffer) < DRIFT_THRESHOLD:
+                print("Concept drift detected. Triggering retrain...")
+                train_model()
+
     except Exception as e:
-        print(f"Loop Error: {e}")
+        print(f"Pipeline Error: {e}")
+
 
 if __name__ == "__main__":
-    print("Extractor Active. Monitoring features and drift.")
+    start_http_server(8002)
+    print("Extractor Active. Monitoring Features and Drift.")
     while True:
         run_pipeline()
-        time.sleep(15)
+        time.sleep(30)
