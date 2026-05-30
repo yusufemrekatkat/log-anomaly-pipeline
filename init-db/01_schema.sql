@@ -1,11 +1,13 @@
 CREATE TABLE IF NOT EXISTS logs (
     id SERIAL PRIMARY KEY,
+    log_id VARCHAR(36) UNIQUE NOT NULL,
     timestamp TIMESTAMP NOT NULL,
     service_name VARCHAR(50) NOT NULL,
     log_level VARCHAR(10) NOT NULL,
     message TEXT,
     response_time_ms FLOAT,
     ip VARCHAR(45),
+    is_true_anomaly BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -31,5 +33,6 @@ CREATE TABLE IF NOT EXISTS anomalies (
     service_name VARCHAR(50) NOT NULL,
     anomaly_score FLOAT,
     is_anomaly BOOLEAN,
-    alert_sent BOOLEAN DEFAULT FALSE
+    alert_sent BOOLEAN DEFAULT FALSE,
+    dominant_feature VARCHAR(50)
 );

@@ -1,24 +1,36 @@
 import os
 import time
-import pandas as pd
+from datetime import UTC, datetime
+
 import numpy as np
-from datetime import datetime, timezone
+import pandas as pd
+from prometheus_client import Counter, Histogram, start_http_server
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 from sqlalchemy import create_engine, text
-from prometheus_client import start_http_server, Counter, Histogram
-
 
 # --- configuration ---
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://admin:secret@db:5432/log_db")
 engine = create_engine(DATABASE_URL)
 
-FEATURE_COLUMNS = ["error_count", "warn_count", "request_count", "avg_response_time", "unique_ip_count"]
+FEATURE_COLUMNS = [
+    "error_count",
+    "warn_count",
+    "request_count",
+    "avg_response_time",
+    "unique_ip_count",
+]
 
 # --- metrics ---
-FEATURES_EXTRACTED = Counter('features_extracted_total', 'Total feature windows processed')
-ANOMALIES_DETECTED = Counter('anomalies_detected_total', 'Total anomalies found', ['service'])
-MODEL_RETRAIN_TIME = Histogram('model_retrain_seconds', 'Time spent retraining the model')
+FEATURES_EXTRACTED = Counter(
+    "features_extracted_total", "Total feature windows processed"
+)
+ANOMALIES_DETECTED = Counter(
+    "anomalies_detected_total", "Total anomalies found", ["service"]
+)
+MODEL_RETRAIN_TIME = Histogram(
+    "model_retrain_seconds", "Time spent retraining the model"
+)
 
 
 # --- State Management ---
@@ -27,6 +39,7 @@ scaler = StandardScaler()
 scores_buffer = []
 DRIFT_WINDOW = 5
 DRIFT_THRESHOLD = -0.05
+
 
 def train_model():
     """Fetches historical features and fits the isolation forest."""
@@ -68,14 +81,16 @@ def run_pipeline():
     """
     try:
         df = pd.read_sql(query, engine)
-        if df.empty: return
+        if df.empty:
+            return
 
         # persistence: save the calculated features
-        df['window_end'] = df['window_start'] + pd.Timedelta(minutes=1)
-        df.to_sql('features', engine, if_exists='append', index=False)
+        df["window_end"] = df["window_start"] + pd.Timedelta(minutes=1)
+        df.to_sql("features", engine, if_exists="append", index=False)
         FEATURES_EXTRACTED.inc(len(df))
 
-        if model is None and not train_model(): return
+        if model is None and not train_model():
+            return
 
         current_batch_scores = []
         for _, row in df.iterrows():
@@ -89,22 +104,27 @@ def run_pipeline():
 
             if prediction == -1:
                 # root cause analysis (z-score attribution): compare current sample against scaler means and scales
-                z_score = (feature_vector[0] - scaler.mean_) / scaler.scale_
-                dominant_idx = np.argmax(np.abs(z_scores))
+                z_scores = (feature_vector[0] - scaler.mean_) / scaler.scale_
+                dominant_idx = int(np.argmax(np.abs(z_scores)))
                 dominant_feature = FEATURE_COLUMNS[dominant_idx]
 
                 with engine.begin() as conn:
-                    conn.execute(text("""
+                    conn.execute(
+                        text("""
                                       INSERT INTO anomalies (detected_at, service_name, anomaly_score, dominant_feature)
                                       VALUES (:ts, :svc, :sc, :df)
-                                      """),{
-                                          "ts": datetime.now(timezone.utc),
-                                          "svc": row['service_name'],
-                                          "sc": float(score),
-                                          "df": dominant_feature
-                                        })
-                ANOMALIES_DETECTED.labels(service=row['service_name']).inc()
-                print(f"Anomaly: {row['service_name']} | Root Cause: {dominant_feature}")
+                                      """),
+                        {
+                            "ts": datetime.now(UTC),
+                            "svc": row["service_name"],
+                            "sc": float(score),
+                            "df": dominant_feature,
+                        },
+                    )
+                ANOMALIES_DETECTED.labels(service=row["service_name"]).inc()
+                print(
+                    f"Anomaly: {row['service_name']} | Root Cause: {dominant_feature}"
+                )
 
         # 4. simple concept drift detection
         avg_score = np.mean(current_batch_scores)
